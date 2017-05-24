@@ -26,14 +26,16 @@ def get_info(bag, topic=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys
 
     # read the first message to get the image size
     msg = bag.read_messages(topics=topic[0]).next()[1]
+    ntopic = len(topic)
     size = (msg.width * len(topic), msg.height)
+    if ntopic % 2 == 0:
+        size = (msg.width * 2, (int)(msg.height * ntopic/2 + 1e-8))
 
     # now read the rest of the messages for the rates
     iterator = bag.read_messages(topics=topic[0], start_time=start_time, end_time=stop_time)#, raw=True)
     for _, msg, _ in iterator:
         time = msg.header.stamp
         times.append(time.to_sec())
-        size = (msg.width * len(topic), msg.height)
     diffs = 1/np.diff(times)
     return np.median(diffs), min(diffs), max(diffs), size, times
 
@@ -61,7 +63,12 @@ def write_frames(bag, writer, total, topic=None, nframes=repeat(1), start_time=r
         frames[topic] = img # remember frame for this topic
         if len(frames) == ntopics and count < len(nframes): # have frames from all topics
             # stack frames for all topics
-            wide_img = np.hstack([frames[t] for t in topics])
+            if len(topics) % 2 != 0:
+                wide_img = np.hstack([frames[t] for t in topics])
+            else:
+                imgleft = np.vstack([frames[t] for t in topics[0::2]])
+                imgright = np.vstack([frames[t] for t in topics[1::2]])
+                wide_img = np.hstack([imgleft, imgright])
             frames = {}
             print '\rWriting frame %s of %s at time %s' % (count-1, total, tstamp)
             for rep in range(nframes[count-1]):
@@ -107,6 +114,7 @@ if __name__ == '__main__':
         bag = rosbag.Bag(bagfile, 'r')
         print 'Calculating video properties'
         topics = args.topic.split(",")
+        
         rate, minrate, maxrate, size, times = get_info(bag, topics, start_time=args.start, stop_time=args.end)
         nframes = calc_n_frames(times, args.precision)
         # writer = cv2.VideoWriter(outfile, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
