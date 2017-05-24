@@ -4,6 +4,7 @@ from __future__ import division
 import rosbag, rospy, numpy as np
 import sys, os, cv2, glob
 from itertools import izip, repeat
+from subprocess import call
 import argparse
 
 # try to find cv_bridge:
@@ -19,6 +20,9 @@ except ImportError:
         print "Could not find ROS package: cv_bridge"
         print "If ROS version is pre-Groovy, try putting this package in ROS_PACKAGE_PATH"
         sys.exit(1)
+
+def get_video_topics(topics):
+    return [t for t in topics if t != "/audio/audio"];
 
 def get_info(bag, topic=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint)):
     size = (0,0)
@@ -44,37 +48,56 @@ def calc_n_frames(times, precision=10):
     intervals = np.diff(times)
     return np.int64(np.round(precision*intervals/min(intervals)))
 
-def write_frames(bag, writer, total, topic=None, nframes=repeat(1), start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint), viz=False, encoding='bgr8'):
+def handle_audio_packet(mp3file, time, msg):
+    mp3file.write("".join(msg.data))
+
+def handle_video_packet(writer, bridge, total, viz, topics, nframes, topic, msg, time, last_time, count, frames):
+    tstamp = msg.header.stamp
+    img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
+    frame_written = False
+    if (tstamp != last_time): # new frame started
+        frames = {} # clear out incomplete frames
+        last_time = tstamp
+        count += 1
+    frames[topic] = img # remember frame for this topic
+    if len(frames) == len(topics) and count < len(nframes): # have frames from all topics
+        frame_written = True
+        # stack frames for all topics
+        if len(topics) % 2 != 0:
+            wide_img = np.hstack([frames[t] for t in topics])
+        else:
+            imgleft = np.vstack([frames[t] for t in topics[0::2]])
+            imgright = np.vstack([frames[t] for t in topics[1::2]])
+            wide_img = np.hstack([imgleft, imgright])
+        frames = {}
+        print '\rWriting frame %s of %s at time %s' % (count-1, total, tstamp)
+        for rep in range(nframes[count-1]):
+            writer.write(wide_img)
+        if viz:
+            imshow('win', wide_img)
+    return last_time, count, frames, frame_written
+
+def write_frames(bag, writer, total, topics=None, nframes=repeat(1), start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint), viz=False, encoding='bgr8'):
     bridge = CvBridge()
     if viz:
         cv2.namedWindow('win')
     count = 0
-    iterator = bag.read_messages(topics=topic, start_time=start_time, end_time=stop_time)
+    video_topics = get_video_topics(topics)
+    iterator = bag.read_messages(topics=topics, start_time=start_time, end_time=stop_time)
     last_time = -1
     frames = {}
-    ntopics  = len(topic)
+    mp3file = open("audio.mp3", 'w');
+    video_frame_found = False
     for (topic, msg, time) in iterator:
-        tstamp = msg.header.stamp
-        img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
-        if (tstamp != last_time): # new frame started
-            frames = {} # clear out incomplete frames
-            last_time = tstamp
-            count += 1
-        frames[topic] = img # remember frame for this topic
-        if len(frames) == ntopics and count < len(nframes): # have frames from all topics
-            # stack frames for all topics
-            if len(topics) % 2 != 0:
-                wide_img = np.hstack([frames[t] for t in topics])
-            else:
-                imgleft = np.vstack([frames[t] for t in topics[0::2]])
-                imgright = np.vstack([frames[t] for t in topics[1::2]])
-                wide_img = np.hstack([imgleft, imgright])
-            frames = {}
-            print '\rWriting frame %s of %s at time %s' % (count-1, total, tstamp)
-            for rep in range(nframes[count-1]):
-                writer.write(wide_img)
-            if viz:
-                imshow('win', wide_img)
+        if msg._type == 'audio_common_msgs/AudioData':
+            if video_frame_found:
+                handle_audio_packet(mp3file, time, msg)
+        else:
+            last_time, count, frames, frame_written = handle_video_packet(writer, bridge, total, viz,
+                                video_topics, nframes, topic, msg, time, last_time, count, frames)
+            if frame_written:
+                video_frame_found = True
+    mp3file.close()
 
 def imshow(win, img):
     cv2.imshow(win, img)
@@ -109,17 +132,23 @@ if __name__ == '__main__':
     for bagfile in glob.glob(args.bagfile):
         print bagfile
         outfile = args.outfile
+        outfile = args.outfile
         if not outfile:
             outfile = os.path.join(*os.path.split(bagfile)[-1].split('.')[:-1]) + '.avi'
+        outfile_tmp = "tmp_" + outfile;
         bag = rosbag.Bag(bagfile, 'r')
         print 'Calculating video properties'
         topics = args.topic.split(",")
-        
-        rate, minrate, maxrate, size, times = get_info(bag, topics, start_time=args.start, stop_time=args.end)
+        video_topics = get_video_topics(topics)
+        rate, minrate, maxrate, size, times = get_info(bag, video_topics, start_time=args.start, stop_time=args.end)
         nframes = calc_n_frames(times, args.precision)
-        # writer = cv2.VideoWriter(outfile, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
-        writer = cv2.VideoWriter(outfile, cv2.VideoWriter_fourcc(*'DIVX'), np.ceil(maxrate*args.precision), size)
+        # writer = cv2.VideoWriter(outfile_tmp, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
+        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), np.ceil(maxrate*args.precision), size)
         print 'Writing video'
-        write_frames(bag, writer, len(times), topic=topics, nframes=nframes, start_time=args.start, stop_time=args.end, viz=args.viz, encoding=args.encoding)
+        write_frames(bag, writer, len(times), topics=topics, nframes=nframes,
+                     start_time=args.start, stop_time=args.end, viz=args.viz, encoding=args.encoding)
         writer.release()
         print '\n'
+        print 'Adding audio'
+        os.system("ffmpeg -i " + outfile_tmp + " -i audio.mp3 -codec copy -shortest " + outfile)
+    

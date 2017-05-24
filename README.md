@@ -11,7 +11,7 @@ Convert images in a rosbag to a variable framerate video. Variable framerate is 
     Extract and encode video from bag files.
     
     positional arguments:
-      topic
+      topics (concatenate multiple topics with commas)
       bagfile
     
     optional arguments:
