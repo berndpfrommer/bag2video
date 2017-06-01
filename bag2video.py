@@ -30,6 +30,7 @@ def get_info(bag, topic=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys
 
     # read the first message to get the image size
     msg = bag.read_messages(topics=topic[0]).next()[1]
+    times.append(msg.header.stamp.to_sec())
     ntopic = len(topic)
     size = (msg.width * len(topic), msg.height)
     if ntopic % 2 == 0:
@@ -40,8 +41,8 @@ def get_info(bag, topic=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys
     for _, msg, _ in iterator:
         time = msg.header.stamp
         times.append(time.to_sec())
-    diffs = 1/np.diff(times)
-    return np.median(diffs), min(diffs), max(diffs), size, times
+    fps = len(times)/(max(times)-min(times))
+    return fps, size, times
 
 def calc_n_frames(times, precision=10):
     # the smallest interval should be one frame, larger intervals more
@@ -51,7 +52,7 @@ def calc_n_frames(times, precision=10):
 def handle_audio_packet(mp3file, time, msg):
     mp3file.write("".join(msg.data))
 
-def handle_video_packet(writer, bridge, total, viz, topics, nframes, topic, msg, time, last_time, count, frames):
+def handle_video_packet(writer, bridge, total, viz, topics, topic, msg, time, last_time, count, frames):
     tstamp = msg.header.stamp
     img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
     frame_written = False
@@ -60,7 +61,7 @@ def handle_video_packet(writer, bridge, total, viz, topics, nframes, topic, msg,
         last_time = tstamp
         count += 1
     frames[topic] = img # remember frame for this topic
-    if len(frames) == len(topics) and count < len(nframes): # have frames from all topics
+    if len(frames) == len(topics) and count < total: # have frames from all topics
         frame_written = True
         # stack frames for all topics
         if len(topics) % 2 != 0:
@@ -71,13 +72,12 @@ def handle_video_packet(writer, bridge, total, viz, topics, nframes, topic, msg,
             wide_img = np.hstack([imgleft, imgright])
         frames = {}
         print '\rWriting frame %s of %s at time %s' % (count-1, total, tstamp)
-        for rep in range(nframes[count-1]):
-            writer.write(wide_img)
+        writer.write(wide_img)
         if viz:
             imshow('win', wide_img)
     return last_time, count, frames, frame_written
 
-def write_frames(bag, writer, total, topics=None, nframes=repeat(1), start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint), viz=False, encoding='bgr8'):
+def write_frames(bag, writer, total, topics=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint), viz=False, encoding='bgr8'):
     bridge = CvBridge()
     if viz:
         cv2.namedWindow('win')
@@ -94,7 +94,7 @@ def write_frames(bag, writer, total, topics=None, nframes=repeat(1), start_time=
                 handle_audio_packet(mp3file, time, msg)
         else:
             last_time, count, frames, frame_written = handle_video_packet(writer, bridge, total, viz,
-                                video_topics, nframes, topic, msg, time, last_time, count, frames)
+                                video_topics, topic, msg, time, last_time, count, frames)
             if frame_written:
                 video_frame_found = True
     mp3file.close()
@@ -140,12 +140,11 @@ if __name__ == '__main__':
         print 'Calculating video properties'
         topics = args.topic.split(",")
         video_topics = get_video_topics(topics)
-        rate, minrate, maxrate, size, times = get_info(bag, video_topics, start_time=args.start, stop_time=args.end)
-        nframes = calc_n_frames(times, args.precision)
+        fps, size, times = get_info(bag, video_topics, start_time=args.start, stop_time=args.end)
         # writer = cv2.VideoWriter(outfile_tmp, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
-        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), np.ceil(maxrate*args.precision), size)
+        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), fps, size)
         print 'Writing video'
-        write_frames(bag, writer, len(times), topics=topics, nframes=nframes,
+        write_frames(bag, writer, len(times), topics=topics,
                      start_time=args.start, stop_time=args.end, viz=args.viz, encoding=args.encoding)
         writer.release()
         print '\n'
