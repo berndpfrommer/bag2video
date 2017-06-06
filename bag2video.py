@@ -53,30 +53,45 @@ def calc_n_frames(times, precision=10):
 def handle_audio_packet(mp3file, time, msg):
     mp3file.write("".join(msg.data))
 
-def handle_video_packet(writer, bridge, total, viz, topics, topic, msg, time, last_time, count, frames):
-    tstamp = msg.header.stamp
-    img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
-    frame_written = False
-    if (tstamp != last_time): # new frame started
-        frames = {} # clear out incomplete frames
-        last_time = tstamp
-        count += 1
-    frames[topic] = img # remember frame for this topic
-    if len(frames) == len(topics) and count < total: # have frames from all topics
-        frame_written = True
-        # stack frames for all topics
-        if len(topics) % 2 != 0:
-            wide_img = np.hstack([frames[t] for t in topics])
+def drain_buffer(tmax, writer, topics, total, count, frame_buffer, last_img):
+    t = min(frame_buffer)
+    #print "draining buffer: %f -> %f diff %f" % (t, tmax, tmax - t)
+    while t <= tmax and len(frame_buffer) > 0:
+        t = min(frame_buffer)
+        # write the frame if we have an image from each camera
+        if len(frame_buffer[t]) == len(topics):
+            if count < total:
+                # stack frames for all topics
+                if len(topics) % 2 != 0:
+                    wide_img = np.hstack([frame_buffer[t][tp] for tp in topics])
+                else:
+                    imgleft = np.vstack([frame_buffer[t][tp] for tp in topics[0::2]])
+                    imgright = np.vstack([frame_buffer[t][tp] for tp in topics[1::2]])
+                    wide_img = np.hstack([imgleft, imgright])
+                print '\rWriting frame %s of %s at time %.6f' % (count-1, total, t)
+                writer.write(wide_img)
+                last_img = wide_img
+        # we don't have images from each camera, write the last one again!
         else:
-            imgleft = np.vstack([frames[t] for t in topics[0::2]])
-            imgright = np.vstack([frames[t] for t in topics[1::2]])
-            wide_img = np.hstack([imgleft, imgright])
-        frames = {}
-        print '\rWriting frame %s of %s at time %s' % (count-1, total, tstamp)
-        writer.write(wide_img)
-        if viz:
-            imshow('win', wide_img)
-    return last_time, count, frames, frame_written
+            if not (last_img == None):
+                print '\rFILLING IN FRAME %s of %s at time %.6f' % (count-1, total, t)
+                writer.write(last_img)
+        # either way, it's time to delete this frame buffer
+        del frame_buffer[t]
+        count += 1
+    return count, frame_buffer, last_img
+    
+
+def handle_video_packet(writer, bridge, total, viz, topics, topic, msg, time, last_time, count, frame_buffer, last_img):
+    tstamp = msg.header.stamp.to_sec();
+    img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
+    if not (tstamp in frame_buffer):
+        frame_buffer[tstamp] = {}
+    frame_buffer[tstamp][topic] = img
+    found_complete_frame = (len(frame_buffer[tstamp]) == len(topics))
+    count, frame_buffer, last_img = drain_buffer(max(frame_buffer) - 1.0, writer,
+                                                 topics, total, count, frame_buffer, last_img)
+    return last_time, count, found_complete_frame, frame_buffer, last_img
 
 def write_frames(bag, writer, total, topics=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys.maxint), viz=False, encoding='bgr8'):
     bridge = CvBridge()
@@ -87,17 +102,22 @@ def write_frames(bag, writer, total, topics=None, start_time=rospy.Time(0), stop
     iterator = bag.read_messages(topics=topics, start_time=start_time, end_time=stop_time)
     last_time = -1
     frames = {}
-    mp3file = open("audio.mp3", 'w');
+    mp3file = open("audio.mp3", 'w')
     video_frame_found = False
+    frame_buffer = {}
+    last_img = None
     for (topic, msg, time) in iterator:
         if msg._type == 'audio_common_msgs/AudioData':
             if video_frame_found:
                 handle_audio_packet(mp3file, time, msg)
         else:
-            last_time, count, frames, frame_written = handle_video_packet(writer, bridge, total, viz,
-                                video_topics, topic, msg, time, last_time, count, frames)
-            if frame_written:
+            last_time, count, found_complete_frame, frame_buffer, last_img = handle_video_packet(writer, bridge, total, viz,
+                                                                                                 video_topics, topic, msg, time,
+                                                                                                 last_time, count, frame_buffer, last_img)
+            if found_complete_frame:
                 video_frame_found = True
+
+    drain_buffer(max(frame_buffer), writer, video_topics, total, count, frame_buffer, last_img)
     mp3file.close()
 
 def imshow(win, img):
@@ -143,12 +163,11 @@ if __name__ == '__main__':
         topics = args.topic.split(",")
         video_topics = get_video_topics(topics)
         fps, size, times = get_info(bag, video_topics, start_time=args.start, stop_time=args.end)
-        # writer = cv2.VideoWriter(outfile_tmp, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
-        rate = fps
-        print 'Writing video to file %s with rate %.10f/sec' % (outfile_tmp, rate)
+        # writer = cv2.VideoWriter(outfile_tmp, cv2.cv.CV_FOURCC(*'DIVX'), fps, size)
+        print 'Writing video to file %s with rate %.10f/sec' % (outfile_tmp, fps)
         
-        #writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), rate, size)
-        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'X264'), rate, size)
+        #writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), fps, size)
+        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'X264'), fps, size)
         write_frames(bag, writer, len(times), topics=topics,
                      start_time=args.start, stop_time=args.end, viz=args.viz, encoding=args.encoding)
         writer.release()
