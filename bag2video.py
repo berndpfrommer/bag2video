@@ -41,7 +41,8 @@ def get_info(bag, topic=None, start_time=rospy.Time(0), stop_time=rospy.Time(sys
     for _, msg, _ in iterator:
         time = msg.header.stamp
         times.append(time.to_sec())
-    fps = len(times)/(max(times)-min(times))
+    tick = 1000
+    fps = round(len(times)*tick/(max(times)-min(times)))/tick
     return fps, size, times
 
 def calc_n_frames(times, precision=10):
@@ -134,7 +135,8 @@ if __name__ == '__main__':
         outfile = args.outfile
         outfile = args.outfile
         if not outfile:
-            outfile = os.path.join(*os.path.split(bagfile)[-1].split('.')[:-1]) + '.avi'
+#            outfile = os.path.join(*os.path.split(bagfile)[-1].split('.')[:-1]) + '.avi'
+            outfile = os.path.join(*os.path.split(bagfile)[-1].split('.')[:-1]) + '.mp4'
         outfile_tmp = "tmp_" + outfile;
         bag = rosbag.Bag(bagfile, 'r')
         print 'Calculating video properties'
@@ -142,8 +144,11 @@ if __name__ == '__main__':
         video_topics = get_video_topics(topics)
         fps, size, times = get_info(bag, video_topics, start_time=args.start, stop_time=args.end)
         # writer = cv2.VideoWriter(outfile_tmp, cv2.cv.CV_FOURCC(*'DIVX'), rate, size)
-        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), fps, size)
-        print 'Writing video'
+        rate = fps
+        print 'Writing video to file %s with rate %.10f/sec' % (outfile_tmp, rate)
+        
+        #writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'DIVX'), rate, size)
+        writer = cv2.VideoWriter(outfile_tmp, cv2.VideoWriter_fourcc(*'X264'), rate, size)
         write_frames(bag, writer, len(times), topics=topics,
                      start_time=args.start, stop_time=args.end, viz=args.viz, encoding=args.encoding)
         writer.release()
