@@ -59,6 +59,7 @@ def drain_buffer(tmax, writer, topics, total, count, frame_buffer, last_img):
     while t <= tmax and len(frame_buffer) > 0:
         t = min(frame_buffer)
         # write the frame if we have an image from each camera
+        count += 1
         if len(frame_buffer[t]) == len(topics):
             if count < total:
                 # stack frames for all topics
@@ -73,23 +74,23 @@ def drain_buffer(tmax, writer, topics, total, count, frame_buffer, last_img):
                 last_img = wide_img
         # we don't have images from each camera, write the last one again!
         else:
-            if not (last_img == None):
+            if not (last_img is None):
                 print '\rFILLING IN FRAME %s of %s at time %.6f' % (count-1, total, t)
                 writer.write(last_img)
         # either way, it's time to delete this frame buffer
         del frame_buffer[t]
-        count += 1
     return count, frame_buffer, last_img
     
 
 def handle_video_packet(writer, bridge, total, viz, topics, topic, msg, time, last_time, count, frame_buffer, last_img):
     tstamp = msg.header.stamp.to_sec();
+    #print "frame: %s time: %.6f" % (topic, tstamp)
     img = np.asarray(bridge.imgmsg_to_cv2(msg, 'bgr8'))
     if not (tstamp in frame_buffer):
         frame_buffer[tstamp] = {}
     frame_buffer[tstamp][topic] = img
     found_complete_frame = (len(frame_buffer[tstamp]) == len(topics))
-    count, frame_buffer, last_img = drain_buffer(max(frame_buffer) - 1.0, writer,
+    count, frame_buffer, last_img = drain_buffer(max(frame_buffer) - 2.0, writer,
                                                  topics, total, count, frame_buffer, last_img)
     return last_time, count, found_complete_frame, frame_buffer, last_img
 
